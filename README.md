@@ -1,6 +1,7 @@
 # 📍 Interactive Relationship Mapper
 
 This Streamlit app helps you map and visualize your relationships using a network graph. You can either **manually input people and their connections** or **upload a JSON file** that follows a specific format.
+You can try it yourself at the following link: **https://relationshipmapping-8qpjg4kqwudamemnmwodub.streamlit.app/**
 
 ## 🌟 Features
 
