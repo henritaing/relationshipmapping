@@ -3,7 +3,7 @@
 This Streamlit app helps you map and visualize your relationships using a network graph. You can either **manually input people and their connections** or **upload a JSON file** that follows a specific format.
 You can try it yourself at the following link: **https://relationshipmapping-8qpjg4kqwudamemnmwodub.streamlit.app/**
 
-## 🌟 Features
+## Features
 
 - Visualize your network of friends or contacts
 - Add people manually or upload a JSON file
@@ -12,7 +12,7 @@ You can try it yourself at the following link: **https://relationshipmapping-8qp
 - Export your graph as an interactive HTML or PNG file
 - Clean and simple UI powered by Streamlit and Plotly
 
-## 🧠 JSON Format Example
+## JSON Format Example
 
 If you choose to upload a JSON file, make sure it follows this format:
 
