@@ -1,0 +1,24 @@
+{
+    "people": [
+                {
+                    "first_name": "Pou", 
+                    "last_name": "Let", 
+                    "connections": ["Alice A"]
+                }, 
+                {
+                    "first_name": "Ro", 
+                    "last_name": "Lex", 
+                    "connections": ["Alice A", "Anais V"]
+                },
+                {
+                    "first_name": "Alice", 
+                    "last_name": "A", 
+                    "connections": ["Pou Let", "Ro Lex"]
+                },
+                {
+                    "first_name": "Anais V", 
+                    "last_name": "A", 
+                    "connections": ["Ro Lex", "Anais V"]
+                }
+            ]
+}

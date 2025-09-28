@@ -1,122 +1,107 @@
 import streamlit as st
 import networkx as nx
 import plotly.graph_objects as go
-import json
-import itertools
+import io, json, base64
+from PIL import Image, ImageOps, ImageDraw
+import numpy as np
 
-# Define the Person class
+# ---------------------
+# Helpers
+# ---------------------
+def make_circle(img_bytes, size=(100, 100)):
+    """Return a circular PNG (bytes) from uploaded image."""
+    img = Image.open(io.BytesIO(img_bytes)).convert("RGBA")
+    img = img.resize(size, Image.LANCZOS)
+
+    mask = Image.new("L", size, 0)
+    draw = ImageDraw.Draw(mask)
+    draw.ellipse((0, 0) + size, fill=255)
+
+    result = ImageOps.fit(img, size, centering=(0.5, 0.5))
+    result.putalpha(mask)
+
+    buffer = io.BytesIO()
+    result.save(buffer, format="PNG")
+    return buffer.getvalue()
+
 class Person:
-    def __init__(self, first_name, last_name, age, sex, hobby, job, met_at):
-        self.first_name = first_name
-        self.last_name = last_name
-        self.age = int(age)
-        self.sex = sex
-        self.hobby = hobby
-        self.job = job
-        self.met_at = met_at
+    def __init__(self, name, image_bytes=None):
+        self.name = name
+        self.image_bytes = image_bytes
         self.connections = []
 
-    def add_connection(self, other_person):
-        if other_person not in self.connections:
-            self.connections.append(other_person)
+    def add_connection(self, other):
+        if other not in self.connections:
+            self.connections.append(other)
 
-    def full_name(self):
-        return f"{self.first_name} {self.last_name}"
+# ---------------------
+# UI Components
+# ---------------------
+def add_people_ui(people_dict):
+    st.subheader("Step 1: Add People")
+    if "temp_name" not in st.session_state:
+        st.session_state.temp_name = ""
 
-# Load from JSON
-def load_people_from_json(uploaded_file):
-    people_dict = {}
-    if uploaded_file is not None:
-        data = json.load(uploaded_file)
-        for person_data in data["people"]:
-            p = Person(**{k: person_data[k] for k in ["first_name", "last_name", "age", "sex", "hobby", "job", "met_at"]})
-            people_dict[p.full_name()] = p
-        # Add connections
-        for person_data in data["people"]:
-            p = people_dict[f"{person_data['first_name']} {person_data['last_name']}"]
-            for conn_name in person_data.get("connections", []):
-                if conn_name in people_dict:
-                    p.add_connection(people_dict[conn_name])
-    return people_dict
-
-# Manual input
-def add_person_ui(people_dict):
-    with st.form("Add Person"):
-        st.write("Add a new person:")
-        fname = st.text_input("First name")
-        lname = st.text_input("Last name")
-        age = st.number_input("Age", min_value=0, max_value=120, step=1)
-        sex = st.selectbox("Sex", ["M", "F", "Other"])
-        hobby = st.text_input("Hobby (Running, Volleyball, Travel, etc.)")
-        job = st.text_input("What's your job? Or are you a student?")
-        met_at = st.text_input("Where did you meet?")
+    with st.form("add_person_form", clear_on_submit=True):
+        name = st.text_input("Name", key="temp_name")
+        uploaded_img = st.file_uploader("Upload a picture (optional)", type=["png", "jpg", "jpeg"])
         submitted = st.form_submit_button("Add")
 
-        if submitted and fname and lname:
-            new_person = Person(fname, lname, age, sex, hobby, job, met_at)
-            people_dict[new_person.full_name()] = new_person
-            st.success(f"Added {new_person.full_name()}")
+        if submitted and name:
+            img_bytes = make_circle(uploaded_img.read()) if uploaded_img else None
+            people_dict[name] = Person(name, img_bytes)
+            st.success(f"Added {name}")
 
     if people_dict:
-        st.write("Now, define their connections:")
-        names = list(people_dict.keys())
-        for person_name in names:
-            options = st.multiselect(f"Who does {person_name} know?", [n for n in names if n != person_name], key=person_name)
-            person = people_dict[person_name]
-            person.connections = [people_dict[n] for n in options]
+        st.write("✅ People added:")
+        st.write(", ".join(people_dict.keys()))
 
+def add_connections_ui(people_dict):
+    st.subheader("Step 2: Define Connections")
+    names = list(people_dict.keys())
 
-# Visualize graph
-def draw_graph(people_dict, group_by=None):
+    for person_name in names:
+        already_connected_to_me = [
+            p.name for p in people_dict.values() if person_name in [c.name for c in p.connections]
+        ]
+        available_options = [n for n in names if n != person_name and n not in already_connected_to_me]
+
+        default_selection = [
+            p.name for p in people_dict[person_name].connections if p.name in available_options
+        ]
+
+        selected_names = st.multiselect(
+            f"{person_name} knows:",
+            options=available_options,
+            default=default_selection,
+            key=f"conn_{person_name}"
+        )
+
+        people_dict[person_name].connections = [people_dict[n] for n in selected_names]
+
+# ---------------------
+# Graph Drawing
+# ---------------------
+def draw_graph(people_dict, image_size=0.3, show_names=True):
     G = nx.Graph()
     for name, person in people_dict.items():
-        G.add_node(name, met_at=person.met_at, hobby=person.hobby)
+        G.add_node(name, image=person.image_bytes)
         for conn in person.connections:
-            G.add_edge(name, conn.full_name())
+            G.add_edge(name, conn.name)
 
-    annotations = []
-    group_colors = {}
-    pos = {}
+    num_nodes = len(G)
+    pos = nx.spring_layout(G, seed=42, k=1.5/num_nodes**0.5, iterations=100)
 
-    if group_by in ["met_at", "hobby"]:
-        # Group nodes
-        groups = {}
-        for node, data in G.nodes(data=True):
-            key = data.get(group_by, "Unknown")
-            groups.setdefault(key, []).append(node)
+    # Normalize positions
+    x_vals = np.array([x for x, y in pos.values()])
+    y_vals = np.array([y for x, y in pos.values()])
+    pad = 0.1
+    x_norm = (x_vals - x_vals.min()) / (x_vals.max() - x_vals.min()) * (1 - 2*pad) + pad
+    y_norm = (y_vals - y_vals.min()) / (y_vals.max() - y_vals.min()) * (1 - 2*pad) + pad
+    for i, node in enumerate(pos):
+        pos[node] = (x_norm[i], y_norm[i])
 
-        # Assign colors to groups
-        colors = itertools.cycle([
-            "#636EFA", "#EF553B", "#00CC96", "#AB63FA",
-            "#FFA15A", "#19D3F3", "#FF6692", "#B6E880"
-        ])
-        group_colors = {group: next(colors) for group in groups}
-
-        # Assign layout positions for each group
-        spacing = 5.0
-        group_centers = {}
-        for idx, group in enumerate(groups):
-            group_centers[group] = (idx * spacing, 0)
-
-        for group, nodes in groups.items():
-            cx, cy = group_centers[group]
-            for i, node in enumerate(nodes):
-                x = cx + (i % 3) * 1.0
-                y = cy + (i // 3) * 1.0
-                pos[node] = (x, y)
-
-            # annotations.append(dict(
-            #     x=cx,
-            #     y=cy + 2.5,
-            #     text=f"{group}",
-            #     showarrow=False,
-            #     font=dict(size=14, color="black")
-            # ))
-
-    else:
-        pos = nx.spring_layout(G, seed=42)
-
-    # Draw edges
+    # Edge traces
     edge_x, edge_y = [], []
     for edge in G.edges():
         x0, y0 = pos[edge[0]]
@@ -125,95 +110,141 @@ def draw_graph(people_dict, group_by=None):
         edge_y += [y0, y1, None]
 
     edge_trace = go.Scatter(
-        x=edge_x, y=edge_y, mode='lines',
-        line=dict(width=1, color='#888'),
-        hoverinfo='none'
+        x=edge_x, y=edge_y,
+        mode="lines",
+        line=dict(width=1, color="#888"),
+        hoverinfo="none"
     )
 
-    legend_traces = {}
-    # Draw nodes
+    # Node traces and images
     node_traces = []
-    for node in G.nodes():
-        x, y = pos[node]
-        group_val = G.nodes[node].get(group_by, "Unknown") if group_by else None
-        color = group_colors.get(group_val, "#636EFA") if group_by else "#636EFA"
+    images = []
+    annotations = []
 
-        # Main node trace
-        trace = go.Scatter(
-            x=[x], y=[y], mode='markers+text',
-            text=[node], textposition='top center',
-            hoverinfo='text',
-            marker=dict(size=5, color=color, line=dict(width=2)),
-            name=node,
-            showlegend=False
-        )
-        node_traces.append(trace)
+    for node, (x, y) in pos.items():
+        person = people_dict[node]
+        if person.image_bytes:
+            img_b64 = base64.b64encode(person.image_bytes).decode("ascii")
+            images.append(dict(
+                source="data:image/png;base64," + img_b64,
+                xref="x", yref="y",
+                x=x, y=y,
+                sizex=image_size,
+                sizey=image_size,
+                xanchor="center",
+                yanchor="middle",
+                layer="above"
+            ))
 
-        # Add to legend once per group
-        if group_by and group_val not in legend_traces:
-            legend_traces[group_val] = go.Scatter(
-                x=[None], y=[None], mode='markers',
-                marker=dict(size=5, color=color),
-                legendgroup=group_val,
-                name=f"{group_val}",
-                showlegend=True
-            )
-    
-    fig = go.Figure(data=[edge_trace] + list(legend_traces.values()) + node_traces)
+            if show_names:
+                annotations.append(dict(
+                    x=x,
+                    y=y - image_size/2 - 0.01,
+                    text=node,
+                    showarrow=False,
+                    xanchor="center",
+                    yanchor="top",
+                    font=dict(size=15),
+                    align="center"
+                ))
+        else:
+            node_traces.append(go.Scatter(
+                x=[x], y=[y],
+                mode="markers+text",
+                text=[node],
+                textposition="top center",
+                marker=dict(size=image_size*100, color="#636EFA"),
+                hoverinfo="text",
+                name=node
+            ))
 
+    fig = go.Figure([edge_trace] + node_traces)
     fig.update_layout(
-        title="Your Relationship Map",
-        showlegend=True,
-        legend=dict(orientation="h", yanchor="bottom", y=-0.2),
-        hovermode='closest',
-        xaxis=dict(showgrid=False, zeroline=False),
-        yaxis=dict(showgrid=False, zeroline=False),
-        margin=dict(b=20, l=5, r=5, t=40),
-        # annotations=annotations
+        title="🎉 Relationship Map",
+        showlegend=False,
+        hovermode="closest",
+        xaxis=dict(showgrid=False, zeroline=False, visible=False),
+        yaxis=dict(showgrid=False, zeroline=False, visible=False),
+        images=images,
+        annotations=annotations,
+        margin=dict(l=20, r=20, t=40, b=20)
     )
+
     st.plotly_chart(fig, use_container_width=True)
 
-    return fig
+# ---------------------
+# Export / Import
+# ---------------------
+def export_to_json(people_dict):
+    data = {"people": []}
+    for p in people_dict.values():
+        data["people"].append({
+            "name": p.name,
+            "connections": [c.name for c in p.connections],
+            "image": base64.b64encode(p.image_bytes).decode("ascii") if p.image_bytes else None
+        })
+    return json.dumps(data, indent=2)
+
+def import_from_json(uploaded_file):
+    people_dict = {}
+    data = json.load(uploaded_file)
+    for p in data["people"]:
+        img_bytes = base64.b64decode(p["image"]) if p["image"] else None
+        people_dict[p["name"]] = Person(p["name"], img_bytes)
+    for p in data["people"]:
+        person = people_dict[p["name"]]
+        for conn_name in p["connections"]:
+            if conn_name in people_dict:
+                person.add_connection(people_dict[conn_name])
+    return people_dict
+
+# ---------------------
+# App Start
+# ---------------------
+st.title("📍 Fun Relationship Mapper")
+st.text("Visualize relationships at weddings or events.")
+st.text("Format for import JSON:")
+st.text("{'people': [{'name': 'Henri','connections': ['Jerome']}, {'name': 'Jerome', 'connections': ['Henri', 'Thomas']}, {'name': 'Thomas', 'connections': ['Jerome']}]}")
 
 
-# Streamlit app start
-st.title("📍 Interactive Relationship Mapper")
-source = st.radio("Choose input method", ["Upload JSON", "Manual Input"])
-st.text("If you plan to use a JSON, please follow the format : ")
-st.html("<p>{'people': [{'first_name': 'Pou', 'last_name': 'Let', 'age': 32, 'sex': 'M', 'hobby': 'Volleyball', 'job': 'QA Engineer', 'met_at': 'HS', 'connections': ['Alice A', 'Anais V']}, {'first_name': 'Ro', 'last_name': 'Lex', 'age': 32, 'sex': 'M', 'hobby': 'Volleyball', 'job': 'QA Engineer', 'met_at': 'HS', 'connections': ['Alice A', 'Anais V']}]}</p>")
-
-grouping_option = st.selectbox("Group nodes by", ["None", "met_at", "hobby"])
-
-# Initialize people_dict here to preserve state
-if 'people_dict' not in st.session_state:
+if "people_dict" not in st.session_state:
     st.session_state.people_dict = {}
 
-people_dict = st.session_state.people_dict
+# Import / Reset
+st.subheader("Import or Reset Map")
+uploaded_file = st.file_uploader("📥 Import JSON", type=["json"], key="import_json")
+if uploaded_file:
+    st.session_state.people_dict = import_from_json(uploaded_file)
+    st.success("People imported!")
 
-if source == "Upload JSON":
-    uploaded_file = st.file_uploader("Upload a JSON file", type=["json"])
-    if uploaded_file:
-        people_dict = load_people_from_json(uploaded_file)
-        st.session_state.people_dict = people_dict  # Store it in session state
-        st.success("People loaded from file.")
-elif source == "Manual Input":
-    add_person_ui(people_dict)
-    st.session_state.people_dict = people_dict  # Store it in session state
+if st.button("🔄 Reset Map", key="reset_map"):
+    st.session_state.people_dict = {}
+    st.experimental_rerun()
 
-if people_dict:
-    fig = draw_graph(people_dict, group_by=grouping_option)
+# Add people
+add_people_ui(st.session_state.people_dict)
 
-    col1, col2 = st.columns(2)
-    with col1:
-        if st.button("📤 Export Graph as HTML"):
-            fig.write_html("relationship_map.html")
-            with open("relationship_map.html", "rb") as f:
-                st.download_button("Download HTML", f, "relationship_map.html", "text/html")
+# Connections
+if st.session_state.people_dict:
+    add_connections_ui(st.session_state.people_dict)
 
-    with col2:
-        if st.button("🖼️ Export Graph as PNG"):
-            fig.write_image("relationship_map.png", format="png", width=1000, height=800)
-            with open("relationship_map.png", "rb") as f:
-                st.download_button("Download PNG", f, "relationship_map.png", "image/png")
+    # Deduplicate symmetric connections
+    for person in st.session_state.people_dict.values():
+        person.connections = [
+            c for c in person.connections
+            if person.name not in [conn.name for conn in c.connections]
+        ]
 
+    # Node size slider
+    st.subheader("Adjust node size")
+    image_size = st.slider("Node image size", min_value=0.05, max_value=1.0, value=0.3, step=0.01)
 
+    # Show names toggle
+    show_names = st.checkbox("Show names below images", value=True)
+
+    # Draw graph
+    draw_graph(st.session_state.people_dict, image_size=image_size, show_names=show_names)
+
+    # Export
+    json_str = export_to_json(st.session_state.people_dict)
+    st.download_button("📤 Export JSON", json_str, "relationship_map.json", "application/json")
